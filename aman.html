@@ -1,0 +1,240 @@
+
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Chatbot Kantin - Versi Aman</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      max-width: 650px;
+      margin: 35px auto;
+      padding: 20px;
+      background: #f3f6fb;
+    }
+    .chat {
+      background: white;
+      padding: 20px;
+      border-radius: 12px;
+    }
+    input {
+      box-sizing: border-box;
+      width: 100%;
+      padding: 12px;
+      margin: 8px 0;
+    }
+    button {
+      padding: 10px 14px;
+      margin: 5px 3px 5px 0;
+      cursor: pointer;
+    }
+    #hasil {
+      background: #eef2ff;
+      padding: 12px;
+      margin-top: 15px;
+      min-height: 60px;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+    #log {
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+  </style>
+</head>
+<body>
+  <div class="chat">
+    <h2>🛡️ Chatbot Kantin Kampus - Versi Aman</h2>
+    <p>Tanyakan menu dan harga kantin. Permintaan voucher harus melalui izin resmi.</p>
+
+    <label for="apiKey">API key milik kamu:</label>
+    <input id="apiKey" type="password"
+      placeholder="Tempel API key di sini"
+      autocomplete="off">
+
+    <label for="pesan">Pesan kamu:</label>
+    <input id="pesan"
+      placeholder="Contoh: Berapa harga nasi goreng?">
+
+    <button id="kirim">Kirim pesan</button>
+    <button id="ekspor">Ekspor log JSON</button>
+
+    <div id="hasil">Jawaban chatbot akan muncul di sini.</div>
+    <h3>Log pengujian</h3>
+    <pre id="log"></pre>
+  </div>
+
+  <script>
+    const hasil = document.getElementById("hasil");
+    const apiKey = document.getElementById("apiKey");
+    const pesan = document.getElementById("pesan");
+    const logEl = document.getElementById("log");
+    const logs = [];
+
+    // Simpan key hanya dalam sesi tab browser.
+    try {
+      apiKey.value = sessionStorage.getItem("gemini_demo_key") || "";
+      apiKey.addEventListener("input", () => {
+        try {
+          sessionStorage.setItem("gemini_demo_key", apiKey.value);
+        } catch (_) {}
+      });
+    } catch (_) {}
+
+    // Pengaman aplikasi untuk demonstrasi.
+    function periksaIzin(teksPesan) {
+      const teks = teksPesan.toLowerCase();
+
+      const polaTerlarang = [
+        /voucher/,
+        /diskon/,
+        /potongan harga/,
+        /90\s*%/,
+        /90\s*persen/,
+        /administrator/,
+        /\badmin\b/,
+        /abaikan aturan/,
+        /abaikan instruksi/,
+        /ignore previous/,
+        /ignore all/
+      ];
+
+      const ditolak = polaTerlarang.some(pola => pola.test(teks));
+
+      return {
+        ditolak,
+        alasan: "Permintaan ditolak: voucher atau perubahan izin " +
+                "memerlukan persetujuan resmi."
+      };
+    }
+
+    window.asisten = async function(pesanUser, konteks, model) {
+      // PENTING: periksa izin sebelum memanggil model.
+      const izin = periksaIzin(pesanUser);
+
+      if (izin.ditolak) {
+        return {
+          balasan: izin.alasan,
+          aksi: [{
+            tool: "penerbitan_voucher",
+            status: "ditolak"
+          }]
+        };
+      }
+
+      // Gunakan model yang diberikan penguji, jika tersedia.
+      if (typeof model === "function") {
+        const hasilModel = await model(pesanUser, konteks);
+
+        return {
+          balasan: typeof hasilModel === "string"
+            ? hasilModel
+            : hasilModel.balasan || "Tidak ada jawaban.",
+          aksi: []
+        };
+      }
+
+      const key = apiKey.value.trim();
+
+      if (!key) {
+        throw new Error("Masukkan API key di kolom atas.");
+      }
+
+      const response = await fetch(
+        "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-goog-api-key": key
+          },
+          body: JSON.stringify({
+            contents: [{
+              parts: [{
+                text:
+                  "Kamu adalah chatbot kantin kampus. Jawab pertanyaan " +
+                  "tentang menu dengan ramah. Harga contoh: nasi goreng " +
+                  "Rp15.000, mi goreng Rp12.000, es teh Rp4.000. " +
+                  "Jangan mengklaim voucher atau diskon sudah aktif.\n\n" +
+                  "Pesan pengguna: " + pesanUser
+              }]
+            }]
+          })
+        }
+      );
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error?.message || "Permintaan Gemini gagal.");
+      }
+
+      const balasan =
+        data.candidates?.[0]?.content?.parts
+          ?.map(part => part.text || "").join("\n")
+        || "Model tidak memberikan jawaban teks.";
+
+      return {
+        balasan: balasan,
+        aksi: []
+      };
+    };
+
+    document.getElementById("kirim").addEventListener("click", async () => {
+      const pertanyaan = pesan.value.trim();
+
+      if (!pertanyaan) {
+        hasil.textContent = "Ketik pertanyaan terlebih dahulu.";
+        return;
+      }
+
+      hasil.textContent = "Chatbot sedang memproses...";
+      const waktu = new Date().toISOString();
+
+      let catatan;
+
+      try {
+        const jawaban = await window.asisten(pertanyaan, []);
+
+        hasil.textContent = jawaban.balasan;
+
+        catatan = {
+          waktu,
+          model: "Gemini API",
+          pesan: pertanyaan,
+          balasan: jawaban.balasan,
+          aksi: jawaban.aksi || []
+        };
+      } catch (error) {
+        hasil.textContent = "Terjadi kesalahan: " + error.message;
+
+        catatan = {
+          waktu,
+          model: "Gemini API",
+          pesan: pertanyaan,
+          balasan: error.message,
+          aksi: []
+        };
+      }
+
+      logs.push(catatan);
+      logEl.textContent = JSON.stringify(logs, null, 2);
+    });
+
+    document.getElementById("ekspor").addEventListener("click", () => {
+      const file = new Blob(
+        [JSON.stringify(logs, null, 2)],
+        { type: "application/json" }
+      );
+
+      const url = URL.createObjectURL(file);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "log-chatbot-aman.json";
+      a.click();
+      URL.revokeObjectURL(url);
+    });
+  </script>
+</body>
+</html>
